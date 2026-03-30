@@ -1,0 +1,65 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main, master, for-testing ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install psychopy>=2023.1.0
+        pip install tobii-research>=1.10.0
+        pip install pyglet>=1.5.0
+        pip install numpy>=1.21.0
+        pip install scipy>=1.7.0
+        pip install pillow>=8.0.0
+        
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --name "ET_LLM_Experiment" --add-data "selected_reviews_data.json;." --add-data "IBMPlexMono-Regular.ttf;." experiment_code.py
+        
+    - name: Create release package
+      run: |
+        mkdir release
+        copy dist\ET_LLM_Experiment.exe release\
+        copy selected_reviews_data.json release\
+        copy IBMPlexMono-Regular.ttf release\
+        copy run_experiment.bat release\
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ET_LLM_Experiment_Windows
+        path: release/
+        
+    - name: Create Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/ET_LLM_Experiment.exe
+          release/selected_reviews_data.json
+          release/IBMPlexMono-Regular.ttf
+          release/run_experiment.bat
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
