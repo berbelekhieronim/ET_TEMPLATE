@@ -1,0 +1,38 @@
+# Configuration file for experiment_code.py
+# 
+# Review ID to use for calibration
+# Specify the exact review ID from the JSON file
+# This review will be excluded from the trial pool
+#
+CALIBRATION_REVIEW_ID=8196
+
+# Number of trials to run from the available reviews
+# (Calibration review is excluded from trials)
+#
+# Options:
+#   N_TRIALS=ALL    - Run all available reviews (default)
+#   N_TRIALS=25     - Run 25 random trials
+#   N_TRIALS=50     - Run 50 random trials
+#   etc.
+#
+# Trials are always selected in RANDOM order from remaining reviews
+
+N_TRIALS=ALL
+
+# Background brightness (0 = black, 1 = white)
+# Recommended: 0.95 for comfortable reading
+#
+BG_BRIGHTNESS=0.85
+
+# Fixation cross tolerance (distance from center, as fraction of screen)
+# Smaller values = stricter fixation required
+# Recommended range: 0.025 - 0.04 (2.5% - 4% of screen)
+# Default was 0.05 (too liberal)
+#
+FIXATION_TOLERANCE=0.03
+
+# Fixation duration required (seconds)
+# How long subject must maintain gaze on fixation cross
+# Recommended range: 0.5 - 0.8 seconds
+#
+FIXATION_DURATION=0.6
