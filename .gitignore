@@ -1,6 +1,10 @@
 # Binary data files
 output/*.bin
 
+# PsychoPy installation (duży folder, nie commitować)
+PsychoPy/
+**/PsychoPy/
+
 # Log files
 *.log
 *.log.*
