@@ -51,18 +51,69 @@ CALIB_TIMEOUT        = 5.0
 CALIB_MAX_RETRIES    = 3
 
 SAVE_LIMIT           = 1000
+TRACKER_MODE_DEFAULT = "AUTO"
+NO_TRACKER_CALIBRATION_ADVANCE = "space"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Imports + DPI Awareness
 # ─────────────────────────────────────────────────────────────────────────────
-import ctypes, math, os, json, random, struct, threading, queue, time
+import ctypes, math, os, json, random, struct, threading, queue, time, sys
 import logging as pylog
 from logging.handlers import RotatingFileHandler
-import pyglet
-from psychopy import visual, event, core, monitors, logging
 
-import os
-from psychopy import event
+HERE = os.path.abspath(os.path.dirname(__file__))
+
+
+def _prepend_sys_path(path):
+    if path and os.path.exists(path) and path not in sys.path:
+        sys.path.insert(0, path)
+        return True
+    return False
+
+
+def _bootstrap_runtime_paths():
+    info = {"psychopy_paths": [], "tobii_paths": []}
+
+    psychopy_candidates = [
+        os.path.join(HERE, "PsychoPy", "Lib", "site-packages"),
+        os.path.join(HERE, "APP from desktop", "PsychoPy", "Lib", "site-packages"),
+    ]
+    for candidate in psychopy_candidates:
+        if _prepend_sys_path(candidate):
+            info["psychopy_paths"].append(candidate)
+
+    if sys.platform.startswith("win"):
+        bits = struct.calcsize("P") * 8
+        sdk_order = ["64", "32"] if bits == 64 else ["32", "64"]
+        sdk_candidates = []
+        for arch in sdk_order:
+            sdk_candidates.append(os.path.join(HERE, "x3-120 SDK", arch))
+            sdk_candidates.append(os.path.join(HERE, "APP from desktop", "x3-120 SDK", arch))
+        for candidate in sdk_candidates:
+            if _prepend_sys_path(candidate):
+                info["tobii_paths"].append(candidate)
+
+    return info
+
+
+BOOTSTRAP_INFO = _bootstrap_runtime_paths()
+
+try:
+    import pyglet
+    from psychopy import visual, event, core, monitors, logging
+except ImportError as exc:
+    msg = [
+        "Startup error: missing PsychoPy runtime.",
+        f"Import failed: {exc}",
+        f"Platform: {sys.platform}",
+    ]
+    if BOOTSTRAP_INFO["psychopy_paths"]:
+        msg.append("Tried bundled PsychoPy paths:")
+        msg.extend(f"  - {path}" for path in BOOTSTRAP_INFO["psychopy_paths"])
+    else:
+        msg.append("No bundled PsychoPy runtime was found next to experiment_code.py.")
+    msg.append("Install PsychoPy in the active Python environment or place a local PsychoPy runtime next to the script.")
+    raise SystemExit("\n".join(msg))
 
 # make ESC an *unconditional* kill-switch (bypasses core.quit or any handlers)
 event.globalKeys.add(
@@ -85,7 +136,6 @@ for fn in ("SetProcessDpiAwareness", "SetProcessDPIAware"):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Logging setup (rotating, 5 MB × 5)
 # ─────────────────────────────────────────────────────────────────────────────
-HERE     = os.path.abspath(os.path.dirname(__file__))
 LOG_PATH = os.path.join(HERE, "experiment_debug.log")
 
 _rot = RotatingFileHandler(
@@ -101,6 +151,10 @@ _console.setFormatter(pylog.Formatter(
 ))
 pylog.basicConfig(level=pylog.INFO, handlers=[_rot, _console])
 pylog.info("=== Script started ===")
+pylog.info("Platform: %s", sys.platform)
+pylog.info("Python executable: %s", sys.executable)
+pylog.info("PsychoPy bootstrap paths: %s", BOOTSTRAP_INFO["psychopy_paths"] or ["system"])
+pylog.info("Tobii bootstrap paths: %s", BOOTSTRAP_INFO["tobii_paths"] or ["system"])
 
 def _log_exc(msg): 
     pylog.exception(msg)
@@ -169,65 +223,9 @@ def push_event(code, *params):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tobii eye-tracker connection
 # ─────────────────────────────────────────────────────────────────────────────
-# Add X3-120 SDK to Python path (use local SDK instead of system installation)
-import sys
-X3_SDK_PATH = os.path.join(HERE, "x3-120 SDK", "64")
-if os.path.exists(X3_SDK_PATH) and X3_SDK_PATH not in sys.path:
-    sys.path.insert(0, X3_SDK_PATH)
-    pylog.info(f"Added X3-120 SDK to path: {X3_SDK_PATH}")
-    print(f"INFO: Added X3-120 SDK to path: {X3_SDK_PATH}")
-else:
-    if not os.path.exists(X3_SDK_PATH):
-        pylog.warning(f"X3-120 SDK path does not exist: {X3_SDK_PATH}")
-        print(f"WARNING: X3-120 SDK path does not exist: {X3_SDK_PATH}")
-
 TOBII = {"connected": False, "error": None}
 et = None
-try:
-    import tobii_research as tr
-    pylog.info(f"Tobii Research SDK loaded, version: {tr.__version__}")
-    print(f"INFO: Tobii Research SDK loaded, version: {tr.__version__}")
-    trackers = tr.find_all_eyetrackers()
-    if trackers:
-        et = trackers[0]
-        pylog.info("Connected to %s (%s)", et.serial_number, et.model)
-        
-        # Set frequency - prefer 120 Hz for X3-120, or use highest available
-        available_freqs = et.get_all_gaze_output_frequencies()
-        pylog.info("Available frequencies: %s", available_freqs)
-        
-        if 120.0 in available_freqs:
-            et.set_gaze_output_frequency(120.0)
-            pylog.info("Set frequency to 120 Hz (X3-120 native)")
-        elif available_freqs:
-            target_freq = max(available_freqs)
-            et.set_gaze_output_frequency(target_freq)
-            pylog.info("Set frequency to %s Hz (highest available)", target_freq)
-        time.sleep(0.1)
-        
-        TOBII.update(
-            connected=True,
-            serial=et.serial_number,
-            model=et.model,
-            freq=et.get_gaze_output_frequency(),
-        )
-    else:
-        pylog.warning("No eye-tracker found")
-        pylog.warning("Troubleshooting: Check USB connection, power, and drivers")
-except Exception as exc:
-    pylog.error("Error initializing Tobii eye-tracker: %s", exc)
-    pylog.error("Exception type: %s", type(exc).__name__)
-    _log_exc("Error initializing Tobii eye-tracker")
-    TOBII["error"] = str(exc)
-    
-    # Print to console immediately for visibility
-    print("\n" + "="*70)
-    print("ERROR: Failed to initialize Tobii eye tracker!")
-    print("="*70)
-    print(f"Error: {exc}")
-    print(f"Type: {type(exc).__name__}")
-    print("\nRun debug_import.py for detailed diagnostics")
-    print("="*70 + "\n")
+tr = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PsychoPy window & fonts
@@ -277,13 +275,19 @@ if not os.path.exists(CONFIG_FILE):
         cf.write(f"# Recommended range: 0.5 - 0.8 seconds\n")
         cf.write(f"# Default was 0.50s, new default: 0.6s\n")
         cf.write(f"#\n")
-        cf.write(f"FIXATION_DURATION=0.6\n")
+        cf.write(f"FIXATION_DURATION=0.6\n\n")
+        cf.write(f"# Eye tracker mode\n")
+        cf.write(f"#   AUTO     - use Tobii if available, otherwise continue without tracker\n")
+        cf.write(f"#   OFF      - force development mode without Tobii\n")
+        cf.write(f"#   REQUIRED - abort if Tobii is unavailable\n")
+        cf.write(f"TRACKER_MODE={TRACKER_MODE_DEFAULT}\n")
     pylog.info(f"Created default config file: {CONFIG_FILE}")
 
 # Read config file for calibration review ID, N_TRIALS, BG_BRIGHTNESS, and fixation parameters
 CALIBRATION_REVIEW_ID = db[0]['id']  # Default to first review
 N_TRIALS = None  # Will be set after we know trial pool size
 BG_BRIGHTNESS = 0.95  # Default: light gray for comfortable reading
+TRACKER_MODE = TRACKER_MODE_DEFAULT
 
 try:
     with open(CONFIG_FILE, "r", encoding="utf-8") as cf:
@@ -348,15 +352,99 @@ try:
                     pylog.info(f"Config: Fixation duration = {FIX_DUR}s")
                 except ValueError:
                     pylog.warning(f"Invalid FIXATION_DURATION value '{value}', using default 0.6s")
+
+            elif line.startswith("TRACKER_MODE="):
+                value = line.split("=", 1)[1].strip().upper()
+                if value in {"AUTO", "OFF", "REQUIRED"}:
+                    TRACKER_MODE = value
+                    pylog.info(f"Config: Tracker mode = {TRACKER_MODE}")
+                else:
+                    pylog.warning(
+                        f"Invalid TRACKER_MODE '{value}', using default {TRACKER_MODE_DEFAULT}"
+                    )
 except Exception as e:
     pylog.error(f"Error reading config file: {e}, using defaults")
     CALIBRATION_REVIEW_ID = db[0]['id']
     N_TRIALS = "ALL"
     BG_BRIGHTNESS = 0.95
+    TRACKER_MODE = TRACKER_MODE_DEFAULT
 
 # Convert BG_BRIGHTNESS (0-1) to PsychoPy color range (-1 to 1)
 BG_COLOR = [BG_BRIGHTNESS * 2 - 1] * 3
 pylog.info(f"Background color set to {BG_COLOR} (brightness={BG_BRIGHTNESS})")
+
+
+def initialize_tobii(mode):
+    global tr, et
+
+    TOBII.update(connected=False, error=None, mode=mode)
+    et = None
+
+    if mode == "OFF":
+        pylog.info("Tracker mode OFF: skipping Tobii initialization")
+        TOBII["error"] = "Tracker disabled by configuration"
+        return
+
+    try:
+        import tobii_research as tr_module
+
+        tr = tr_module
+        pylog.info(
+            "Tobii Research SDK loaded from %s, version: %s",
+            getattr(tr, "__file__", "unknown"),
+            getattr(tr, "__version__", "unknown"),
+        )
+        print(
+            "INFO: Tobii Research SDK loaded from "
+            f"{getattr(tr, '__file__', 'unknown')} "
+            f"(version {getattr(tr, '__version__', 'unknown')})"
+        )
+        trackers = tr.find_all_eyetrackers()
+        if trackers:
+            et = trackers[0]
+            pylog.info("Connected to %s (%s)", et.serial_number, et.model)
+
+            available_freqs = et.get_all_gaze_output_frequencies()
+            pylog.info("Available frequencies: %s", available_freqs)
+
+            if 120.0 in available_freqs:
+                et.set_gaze_output_frequency(120.0)
+                pylog.info("Set frequency to 120 Hz (X3-120 native)")
+            elif available_freqs:
+                target_freq = max(available_freqs)
+                et.set_gaze_output_frequency(target_freq)
+                pylog.info("Set frequency to %s Hz (highest available)", target_freq)
+            time.sleep(0.1)
+
+            TOBII.update(
+                connected=True,
+                serial=et.serial_number,
+                model=et.model,
+                freq=et.get_gaze_output_frequency(),
+            )
+        else:
+            TOBII["error"] = "No eye-tracker found"
+            pylog.warning("No eye-tracker found")
+            pylog.warning("Troubleshooting: Check USB connection, power, and drivers")
+    except Exception as exc:
+        pylog.error("Error initializing Tobii eye-tracker: %s", exc)
+        pylog.error("Exception type: %s", type(exc).__name__)
+        _log_exc("Error initializing Tobii eye-tracker")
+        TOBII["error"] = str(exc)
+
+        print("\n" + "="*70)
+        print("ERROR: Failed to initialize Tobii eye tracker!")
+        print("="*70)
+        print(f"Error: {exc}")
+        print(f"Type: {type(exc).__name__}")
+        if not sys.platform.startswith("win"):
+            print("Note: the bundled X3-120 SDK in this project is Windows-oriented.")
+            print("On Linux/macOS, install a platform-compatible tobii_research package.")
+        print("\nRun debug_import.py for detailed diagnostics")
+        print("="*70 + "\n")
+
+
+initialize_tobii(TRACKER_MODE)
 
 # Separate calibration review from trial reviews based on ID
 calibration_review = None
@@ -417,6 +505,61 @@ SCR_W, SCR_H = win.size
 pyglet.font.load(FONT, FSIZE)
 _FONT = pyglet.font.load(FONT, FSIZE)
 
+
+def _show_message_screen(title, body_lines, key_list=None, wait_for_key=True):
+    message = title
+    if body_lines:
+        message += "\n\n" + "\n".join(body_lines)
+    win.color = BG_COLOR
+    visual.TextStim(
+        win,
+        text=message,
+        font=FONT,
+        height=30,
+        color=[-1, -1, -1],
+        alignText="center",
+        wrapWidth=(BR[0] - TL[0]) * SCR_W,
+        pos=(0, 0),
+    ).draw()
+    win.flip(clearBuffer=True)
+    if wait_for_key:
+        return event.waitKeys(keyList=key_list or ["space", "escape"])
+    return None
+
+
+def show_startup_status():
+    if TRACKER_MODE == "REQUIRED" and not TOBII["connected"]:
+        return _show_message_screen(
+            "Tracker required",
+            [
+                "TRACKER_MODE is set to REQUIRED.",
+                "No compatible Tobii device is available.",
+                f"Reason: {TOBII.get('error') or 'unknown'}",
+                "Press ESC to close.",
+            ],
+            key_list=["escape"],
+        )
+
+    if TOBII["connected"]:
+        body = [
+            f"Tracker mode: {TRACKER_MODE}",
+            f"Connected device: {TOBII.get('model', 'unknown')} ({TOBII.get('serial', 'n/a')})",
+            f"Frequency: {TOBII.get('freq', 'n/a')} Hz",
+            "Press SPACE to start or ESC to abort.",
+        ]
+    else:
+        body = [
+            f"Tracker mode: {TRACKER_MODE}",
+            "Running in development mode without eye tracker.",
+            f"Reason: {TOBII.get('error') or 'Tracker unavailable'}",
+            "Calibration will run as a visual preview only.",
+            "Trials will use keyboard responses only.",
+            "Press SPACE to continue or ESC to abort.",
+        ]
+
+    return _show_message_screen("Experiment startup", body)
+
+
 # Robust glyph width function with fallback for missing characters
 def gw(ch):
     """Get glyph advance width for a character, with fallback for missing glyphs."""
@@ -444,6 +587,12 @@ def abort_if_escape():
         ABORT = True
         pylog.info("Early-exit requested (Esc)")
     return ABORT
+
+
+startup_keys = show_startup_status()
+if startup_keys and "escape" in startup_keys:
+    ABORT = True
+    pylog.info("Startup aborted by user")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Gaze data callback (frequency depends on eye tracker model)
@@ -686,8 +835,22 @@ def perform_calibration():
                 if not collect_success:
                     _log_and_flush(f"tracker: WARNING - Failed to collect data for point {idx} after {CALIB_MAX_RETRIES+1} attempts")
         else:
-            core.wait(0.25)  # lightweight pause
-            pylog.info(f"loop: no-tracker pause after point {idx}")
+            prompt = visual.TextStim(
+                win,
+                text="Development mode: press SPACE for next calibration point or ESC to abort",
+                font=FONT,
+                height=24,
+                color=[-1, -1, -1],
+                pos=(0, -SCR_H / 2 + 40),
+            )
+            prompt.draw()
+            win.flip()
+            keys = event.waitKeys(keyList=["space", "escape"])
+            if keys and "escape" in keys:
+                ABORT = True
+                pylog.info("tracker: no-tracker calibration aborted by user")
+                break
+            pylog.info(f"loop: no-tracker advance after point {idx}")
 
     # ── finalise tracker -------------------------------------------------------
     if tracker_on:
@@ -827,7 +990,8 @@ def perform_calibration():
 
 
 try:
-    perform_calibration()
+    if not ABORT:
+        perform_calibration()
 except Exception as e:
     _log_and_flush(f"CRITICAL: Calibration crashed with exception: {e}")
     _log_exc("Calibration exception details")
