@@ -2,6 +2,16 @@
 
 Instrukcje dla agenta pracującego w trybie **ASK** podczas zajęć z eye-trackingu.
 
+## Procedura startowa: zainstaluj wymagania
+
+Przed pierwszym zadaniem związanym z odczytem PDF-ów z folderu `badania/` uruchom:
+
+```bash
+python3 -m pip show pypdf > /dev/null 2>&1 || python3 -m pip install -r requirements-pdf.txt
+```
+
+Instaluje/sprawdza to bibliotekę `pypdf` (patrz [requirements-pdf.txt](requirements-pdf.txt)) potrzebną do wyciągania tekstu z artykułów.
+
 ## Kontekst
 
 W folderze [badania/](badania/) znajduje się zestaw artykułów naukowych (PDF) opisujących badania wykorzystujące eye-tracking:
